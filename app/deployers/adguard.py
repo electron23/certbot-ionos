@@ -38,6 +38,9 @@ class AdGuardDeployer(Deployer):
         # Keep every existing TLS setting, only swap the certificate material.
         tls["certificate_chain"] = base64.b64encode(bundle.fullchain.encode()).decode()
         tls["private_key"] = base64.b64encode(bundle.privkey.encode()).decode()
+        # The status reports private_key_saved=true when a key is stored. Sent back
+        # as-is, AdGuard ignores our new key and keeps the old one (key mismatch).
+        tls["private_key_saved"] = False
         tls["certificate_path"] = ""
         tls["private_key_path"] = ""
         tls["enabled"] = True
