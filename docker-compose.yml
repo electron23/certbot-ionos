@@ -1,0 +1,57 @@
+# Portainer-ready: Stacks > Add stack > Repository (builds the image from this repo).
+# Set the variables below in Portainer's "Environment variables" section.
+#
+#   Required:  ACME_EMAIL  IONOS_PREFIX  IONOS_SECRET  SMB_PASSWORD
+#   Optional:  everything else, defaults are shown after ":-"
+#
+# Which certificates and targets exist (CERTS, CERT_*, TARGET_*) is NOT configured here
+# but in  config/certsync.env  on the Samba share (see config/certsync.env.example there).
+# That file is re-read automatically, so adding a domain or system needs no redeploy.
+services:
+  certsync:
+    build: .
+    image: ${CERTSYNC_IMAGE:-certsync-ionos:latest}
+    container_name: certsync
+    restart: unless-stopped
+    # Same IDs as the Samba service so both can read/write the share.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL:?Set ACME_EMAIL}"
+      # true = Let's Encrypt staging (untrusted certificates, no rate limits). Test first!
+      ACME_STAGING: "${ACME_STAGING:-true}"
+      IONOS_PREFIX: "${IONOS_PREFIX:?Set IONOS_PREFIX}"
+      IONOS_SECRET: "${IONOS_SECRET:?Set IONOS_SECRET}"
+      IONOS_ENDPOINT: "${IONOS_ENDPOINT:-https://api.hosting.ionos.com}"
+      DNS_PROPAGATION_SECONDS: "${DNS_PROPAGATION_SECONDS:-120}"
+      CHECK_INTERVAL_HOURS: "${CHECK_INTERVAL_HOURS:-12}"
+      RENEW_DAYS_BEFORE_EXPIRY: "${RENEW_DAYS_BEFORE_EXPIRY:-30}"
+      KEY_TYPE: "${KEY_TYPE:-rsa}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    volumes:
+      # ACME account, certbot data, state, SSH known_hosts (internal)
+      - certsync-data:/data
+      # certs/ scripts/ config/  (also served by Samba below).
+      # SHARE_PATH without a slash = named volume (default), with a slash = host folder.
+      - ${SHARE_PATH:-certsync-share}:/share
+
+  samba:
+    image: ${SAMBA_IMAGE:-dockurr/samba:latest}
+    container_name: certsync-samba
+    restart: unless-stopped
+    # Start after certsync so the share volume is initialised with writable permissions.
+    depends_on:
+      - certsync
+    environment:
+      NAME: "certsync"
+      USER: "${SMB_USER:-certsync}"
+      PASS: "${SMB_PASSWORD:?Set SMB_PASSWORD}"
+      UID: "${PUID:-1000}"
+      GID: "${PGID:-1000}"
+    ports:
+      - "${SMB_PORT:-445}:445"
+    volumes:
+      - ${SHARE_PATH:-certsync-share}:/shared
+
+volumes:
+  certsync-data:
+  certsync-share:

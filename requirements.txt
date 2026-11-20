@@ -1,0 +1,7 @@
+certbot>=3.0,<4
+certbot-dns-ionos==2024.11.9
+# certbot 3.x uses josepy 1.x, which needs OpenSSL.crypto.X509Req (removed in newer pyOpenSSL)
+pyOpenSSL>=24.0,<25
+cryptography>=42,<45
+requests>=2.32,<3
+paramiko>=3.4,<5
