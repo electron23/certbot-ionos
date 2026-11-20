@@ -72,13 +72,17 @@ Wenn du beide brauchst, führe beide auf.
 | `proxmox` | API `POST /nodes/<node>/certificates/custom`, startet pveproxy neu | `url`, `token`, `nodes`, `verify_tls` |
 | `adguard` | API `/control/tls/configure`, übernimmt bestehende TLS-Einstellungen | `url`, `username`, `password`, `verify_tls` |
 | `unifi` | SSH: schreibt `unifi-core.crt/.key`, `systemctl restart unifi-core` | `host`, `password` oder `key_file` |
-| `homeassistant` | SSH: schreibt `/ssl/fullchain.pem` und `privkey.pem`, `ha core restart` | `host`, `password` oder `key_file`, `command` |
+| `homeassistant` | SSH: schreibt `/ssl/fullchain.pem` und `privkey.pem`, `ha core restart` | `host`, `user`, `password` oder `key_file`, `command` |
+| `homeassistant_apps` | wie `homeassistant`, startet aber nur die genannten Apps neu | `host`, `user`, `password` oder `key_file`, `apps` |
 | `ssh` | beliebiger Host: Dateien hochladen, Kommando ausführen | `host`, `fullchain_path`, `privkey_path`, `command` |
 | `file` | schreibt PEM-Dateien in ein gemountetes Verzeichnis | `dir`, `prefix` |
 | `script` | startet dein Skript aus `scripts/` | `path`, `timeout`, beliebige weitere Optionen als `OPT_<KEY>` |
 
-Home Assistant Apps (Add-ons), die `/ssl` nutzen, bekommen ein zweites Ziel vom
-Typ `homeassistant` mit eigenem `command`, z. B. `ha addons restart core_nginx_proxy`.
+Home Assistant Apps (Add-ons), die ihr Zertifikat aus `/ssl` lesen, bekommen ein
+Ziel vom Typ `homeassistant_apps` mit der Liste ihrer Slugs in `APPS`. Eine neue App
+ist dann nur ein zusätzlicher Slug. Die Slugs zeigt `ha addons` in der App
+"Terminal & SSH". Nur installierte und laufende Apps eintragen, ein Neustart einer
+gestoppten App schlägt fehl.
 
 Alle Optionen: `examples/certsync.env.example` bzw. `config/certsync.env.example` auf der Share.
 Globale Variablen für Portainer: `.env.example`.

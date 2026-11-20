@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 from pathlib import Path
 
 import paramiko
 
-from ..config import ConfigError
+from ..config import ConfigError, split_list
 from ..issuer import CertBundle
 from .base import Deployer, register
 
@@ -143,6 +144,39 @@ class HomeAssistantDeployer(SshDeployer):
         "command": "ha core restart",
         "port": "22",
     }
+
+
+@register("homeassistant_apps")
+class HomeAssistantAppsDeployer(HomeAssistantDeployer):
+    """Restart specific Home Assistant apps (add-ons) that read /ssl.
+
+    Same connection options as ``homeassistant``, plus:
+
+    apps   space/comma separated app slugs, e.g. "a0d7b954_adguard a0d7b954_portainer"
+           (list them with ``ha addons`` in the Terminal & SSH app)
+
+    The certificate files are written to /ssl as well, so this target also works
+    on its own. Every app is tried; if one fails the deploy is reported as
+    failed and retried in the next cycle.
+    """
+
+    required = ("host", "apps")
+
+    def __init__(self, name: str, type_: str, options: dict[str, str]):
+        apps = split_list(options.get("apps", ""))
+        bad = [a for a in apps if not re.fullmatch(r"[A-Za-z0-9_-]+", a)]
+        if bad:
+            raise ConfigError(
+                f"Target '{name}' ({type_}): invalid app slug(s): {', '.join(bad)}"
+            )
+        if apps:
+            options = {
+                **options,
+                "command": "rc=0; for a in "
+                + " ".join(apps)
+                + '; do ha addons restart "$a" || rc=1; done; exit $rc',
+            }
+        super().__init__(name, type_, options)
 
 
 @register("unifi")
