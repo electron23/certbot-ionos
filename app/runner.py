@@ -107,14 +107,18 @@ def _config_mtime() -> float:
         return 0.0
 
 
-def _sleep_until_due_or_config_changed(seconds: float, poll: float = 30.0) -> None:
-    start_mtime = _config_mtime()
+def _sleep_until_due_or_config_changed(
+    seconds: float, baseline_mtime: float | None = None, poll: float = 30.0
+) -> None:
+    # ``baseline_mtime`` is the file's mtime from *before* the config was loaded, so a
+    # write that finishes after a failed (half-written) read is still noticed.
+    start_mtime = _config_mtime() if baseline_mtime is None else baseline_mtime
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
         if _config_mtime() != start_mtime:
             log.info("config file changed, running a cycle now")
-            time.sleep(2)  # let the editor / Samba finish writing
+            time.sleep(5)  # let the editor / Samba finish writing
             return
 
 
@@ -133,6 +137,7 @@ def run_daemon() -> None:
     config: Config | None = None
     deployers: dict[str, Deployer] = {}
     while True:
+        loaded_mtime = _config_mtime()  # read before loading, see _sleep_until_...
         try:
             new_config = load_config()
             deployers = build_deployers(new_config)
@@ -144,7 +149,7 @@ def run_daemon() -> None:
                     "configuration invalid: %s. Waiting for %s to be created or fixed.",
                     exc, os.environ.get("CONFIG_FILE", "/share/config/certsync.env"),
                 )
-                _sleep_until_due_or_config_changed(600)
+                _sleep_until_due_or_config_changed(600, loaded_mtime)
                 continue
             log.error("configuration reload failed, keeping the previous one: %s", exc)
 
@@ -156,4 +161,4 @@ def run_daemon() -> None:
 
         interval = max(config.settings.check_interval_hours, 0.1) * 3600
         log.info("next check in %.1f hours (or when the config file changes)", interval / 3600)
-        _sleep_until_due_or_config_changed(interval)
+        _sleep_until_due_or_config_changed(interval, loaded_mtime)

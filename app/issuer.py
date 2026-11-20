@@ -72,6 +72,35 @@ def _write_credentials(settings: Settings) -> Path:
     return path
 
 
+STAGING_REASON = "staging certificate, replacing it with a production one"
+
+
+def _wants_staging(settings: Settings) -> bool:
+    # A custom ACME_SERVER is never treated as Let's Encrypt staging.
+    return settings.acme_staging and not settings.acme_server
+
+
+def _is_staging_cert(parsed: x509.Certificate) -> bool:
+    """Let's Encrypt staging certificates are issued by '(STAGING) ...' CAs."""
+    return "STAGING" in parsed.issuer.rfc4514_string().upper()
+
+
+def _delete_lineage(cert: CertConfig, settings: Settings) -> None:
+    """Remove the certbot lineage so a fresh one can be requested from another CA."""
+    dirs = _dirs(settings)
+    proc = subprocess.run(
+        ["certbot", "delete", "--non-interactive", "--cert-name", cert.name,
+         "--config-dir", str(dirs["config"]), "--work-dir", str(dirs["work"]),
+         "--logs-dir", str(dirs["logs"])],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise IssueError(
+            f"could not remove the staging certificate '{cert.name}': "
+            f"{(proc.stderr or proc.stdout).strip()[-200:]}"
+        )
+
+
 def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
     """Return why (re-)issuance is needed, or None if the current cert is fine."""
     try:
@@ -89,6 +118,9 @@ def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
     if missing:
         return f"domains not covered yet: {', '.join(sorted(missing))}"
 
+    if _is_staging_cert(parsed) and not _wants_staging(settings):
+        return STAGING_REASON
+
     remaining = parsed.not_valid_after_utc - datetime.now(timezone.utc)
     if remaining <= timedelta(days=settings.renew_days_before_expiry):
         return f"expires in {remaining.days} days"
@@ -102,6 +134,8 @@ def issue(cert: CertConfig, settings: Settings) -> None:
     if reason is None:
         return
     log.info("[%s] requesting certificate: %s", cert.name, reason)
+    if reason == STAGING_REASON:
+        _delete_lineage(cert, settings)
 
     dirs = _dirs(settings)
     for path in dirs.values():
