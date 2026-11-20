@@ -16,7 +16,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from datetime import time as dt_time
 from typing import Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}
@@ -77,7 +80,52 @@ class Settings:
     ionos_endpoint: str
     propagation_seconds: int
     check_interval_hours: float
-    renew_days_before_expiry: int
+    #: None = renew when one third of the certificate lifetime is left
+    renew_days_before_expiry: int | None
+    #: None = deploy at any time, otherwise only inside this daily window
+    deploy_window: DeployWindow | None
+
+
+@dataclass(frozen=True)
+class DeployWindow:
+    """Daily time window (local time of ``tz``), may span midnight."""
+
+    start: dt_time
+    end: dt_time
+    tz: ZoneInfo
+
+    def __str__(self) -> str:
+        return f"{self.start:%H:%M}-{self.end:%H:%M} {self.tz.key}"
+
+    def contains(self, moment: datetime) -> bool:
+        now = moment.astimezone(self.tz).time()
+        if self.start <= self.end:
+            return self.start <= now < self.end
+        return now >= self.start or now < self.end  # e.g. 23:00-02:00
+
+    def seconds_until_start(self, moment: datetime) -> float:
+        local = moment.astimezone(self.tz)
+        start = datetime.combine(local.date(), self.start, tzinfo=self.tz)
+        if start <= local:
+            start += timedelta(days=1)
+        return (start - local).total_seconds()
+
+
+def parse_window(value: str | None, tz_name: str) -> DeployWindow | None:
+    raw = (value or "").strip().lower()
+    if raw in ("", "any", "always", "off", "none"):
+        return None
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", raw)
+    if not match:
+        raise ConfigError(f"DEPLOY_WINDOW must look like 03:00-05:00, got {value!r}")
+    h1, m1, h2, m2 = (int(x) for x in match.groups())
+    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59 or (h1, m1) == (h2, m2):
+        raise ConfigError(f"DEPLOY_WINDOW is not a valid time range: {value!r}")
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"Unknown time zone {tz_name!r} (TZ)") from exc
+    return DeployWindow(dt_time(h1, m1), dt_time(h2, m2), tz)
 
 
 @dataclass(frozen=True)
@@ -120,7 +168,15 @@ def _load_settings(env: Mapping[str, str]) -> Settings:
         ionos_endpoint=(env.get("IONOS_ENDPOINT") or "https://api.hosting.ionos.com").strip(),
         propagation_seconds=int(_number(env, "DNS_PROPAGATION_SECONDS", 120)),
         check_interval_hours=_number(env, "CHECK_INTERVAL_HOURS", 12),
-        renew_days_before_expiry=int(_number(env, "RENEW_DAYS_BEFORE_EXPIRY", 30)),
+        renew_days_before_expiry=(
+            int(_number(env, "RENEW_DAYS_BEFORE_EXPIRY", 0))
+            if (env.get("RENEW_DAYS_BEFORE_EXPIRY") or "").strip()
+            else None
+        ),
+        deploy_window=parse_window(
+            env.get("DEPLOY_WINDOW", "03:00-05:00"),
+            (env.get("TZ") or "Europe/Berlin").strip(),
+        ),
     )
 
 

@@ -24,7 +24,12 @@ services:
       IONOS_ENDPOINT: "${IONOS_ENDPOINT:-https://api.hosting.ionos.com}"
       DNS_PROPAGATION_SECONDS: "${DNS_PROPAGATION_SECONDS:-120}"
       CHECK_INTERVAL_HOURS: "${CHECK_INTERVAL_HOURS:-12}"
-      RENEW_DAYS_BEFORE_EXPIRY: "${RENEW_DAYS_BEFORE_EXPIRY:-30}"
+      # Empty = renew with one third of the lifetime left (Let's Encrypt recommendation)
+      RENEW_DAYS_BEFORE_EXPIRY: "${RENEW_DAYS_BEFORE_EXPIRY:-}"
+      # Renewed certificates (and retries) are deployed, i.e. systems restarted,
+      # only inside this daily window. Empty = any time.
+      DEPLOY_WINDOW: "${DEPLOY_WINDOW:-03:00-05:00}"
+      TZ: "${TZ:-Europe/Berlin}"
       KEY_TYPE: "${KEY_TYPE:-rsa}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
     volumes:

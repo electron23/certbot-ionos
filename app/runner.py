@@ -39,6 +39,13 @@ class State:
         self.data[self._key(cert, target)] = fingerprint
         self._write(self.path, self.data)
 
+    def attempted(self, cert: str, target: str) -> str | None:
+        return self.data.get("attempt::" + self._key(cert, target))
+
+    def mark_attempt(self, cert: str, target: str, fingerprint: str) -> None:
+        self.data["attempt::" + self._key(cert, target)] = fingerprint
+        self._write(self.path, self.data)
+
     def write_status(self, ok: bool) -> None:
         self._write(
             self.status_path,
@@ -66,8 +73,15 @@ def run_cycle(
     only: str | None = None,
     force_deploy: bool = False,
     skip_issue: bool = False,
+    in_window: bool | None = None,
 ) -> bool:
-    """One pass over all certificates. Returns True if everything succeeded."""
+    """One pass over all certificates. Returns True if everything succeeded.
+
+    ``in_window`` defaults to "is now inside DEPLOY_WINDOW" (always True without one).
+    """
+    window = config.settings.deploy_window
+    if in_window is None:
+        in_window = window is None or window.contains(datetime.now(timezone.utc))
     ok = True
     for cert in config.certs:
         if only and cert.name != only:
@@ -84,10 +98,22 @@ def run_cycle(
         log.info("[%s] valid until %s", cert.name, bundle.not_after.date())
         export_to_share(cert.name, bundle, config.settings.share_dir)
         for target_name in cert.targets:
-            if not force_deploy and state.deployed(cert.name, target_name) == bundle.fingerprint:
+            deployed = state.deployed(cert.name, target_name)
+            if not force_deploy and deployed == bundle.fingerprint:
                 log.debug("[%s] %s is up to date", cert.name, target_name)
                 continue
+            # Deploying usually restarts the target. Outside the window only the very
+            # first attempt for a newly configured target runs right away; renewals and
+            # retries after a failure wait for the window.
+            first_try = deployed is None and state.attempted(cert.name, target_name) is None
+            if not (force_deploy or in_window or first_try):
+                log.info(
+                    "[%s] deploy to %s pending, deferred to the deploy window (%s)",
+                    cert.name, target_name, config.settings.deploy_window,
+                )
+                continue
             log.info("[%s] deploying to %s", cert.name, target_name)
+            state.mark_attempt(cert.name, target_name, bundle.fingerprint)
             try:
                 deployers[target_name].deploy(bundle)
             except Exception as exc:  # one broken target must not block the others
@@ -160,5 +186,10 @@ def run_daemon() -> None:
             log.exception("unexpected error in cycle")
 
         interval = max(config.settings.check_interval_hours, 0.1) * 3600
+        window = config.settings.deploy_window
+        if window is not None:
+            # Always wake up shortly after the window opens, so pending deploys run there
+            # even if the regular check interval would skip over the window.
+            interval = min(interval, window.seconds_until_start(datetime.now(timezone.utc)) + 60)
         log.info("next check in %.1f hours (or when the config file changes)", interval / 3600)
         _sleep_until_due_or_config_changed(interval, loaded_mtime)

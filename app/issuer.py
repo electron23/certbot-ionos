@@ -122,7 +122,13 @@ def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
         return STAGING_REASON
 
     remaining = parsed.not_valid_after_utc - datetime.now(timezone.utc)
-    if remaining <= timedelta(days=settings.renew_days_before_expiry):
+    if settings.renew_days_before_expiry is not None:
+        threshold = timedelta(days=settings.renew_days_before_expiry)
+    else:
+        # Let's Encrypt's recommendation: renew with one third of the lifetime left.
+        # Adapts automatically to shorter lifetimes (90 -> 64 -> 45 days).
+        threshold = (parsed.not_valid_after_utc - parsed.not_valid_before_utc) / 3
+    if remaining <= threshold:
         return f"expires in {remaining.days} days"
     log.info("[%s] valid for %d more days, no renewal needed", cert.name, remaining.days)
     return None

@@ -89,10 +89,15 @@ Globale Variablen für Portainer: `.env.example`.
 
 ## Verhalten
 
-- Zertifikat wird nur beantragt, wenn es fehlt, Domains fehlen oder es in
-  `RENEW_DAYS_BEFORE_EXPIRY` (30) Tagen abläuft.
-- Deploy erfolgt pro Ziel nur bei geändertem Zertifikat. Ein fehlgeschlagenes Ziel
-  wird im nächsten Durchlauf erneut versucht und blockiert die anderen nicht.
+- Zertifikat wird nur beantragt, wenn es fehlt, Domains fehlen oder nur noch ein
+  Drittel der Laufzeit übrig ist (bei 90 Tagen also etwa alle 60 Tage). Fester Wert
+  mit `RENEW_DAYS_BEFORE_EXPIRY`.
+- Deploy (und damit der Neustart des Systems) erfolgt pro Ziel nur bei geändertem
+  Zertifikat, und zwar nur im Wartungsfenster `DEPLOY_WINDOW` (Standard `03:00-05:00`,
+  Zeitzone `TZ`, Standard `Europe/Berlin`). Ausnahme: der erste Deploy auf ein neu
+  eingetragenes Ziel läuft sofort. Ein fehlgeschlagenes Ziel wird im nächsten
+  Fenster erneut versucht und blockiert die anderen nicht.
+- Die 12-stündliche Prüfung selbst startet nichts neu.
 - SSH-Hostschlüssel werden beim ersten Kontakt gespeichert (trust on first use),
   ein geänderter Schlüssel wird abgelehnt.
 

@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # curl + ssh/scp are handy inside user deploy scripts
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl openssh-client \
+    && apt-get install -y --no-install-recommends curl openssh-client tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data /share \
     && chmod 0777 /data /share

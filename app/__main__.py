@@ -73,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
                          ", ".join(cert.targets) or "(no targets)")
         for name, t in config.targets.items():
             logging.info("target %-10s type=%s", name, t.type)
+        s = config.settings
+        logging.info("deploy window: %s", s.deploy_window or "any time")
+        logging.info("renew: %s", f"{s.renew_days_before_expiry} days before expiry"
+                     if s.renew_days_before_expiry is not None else "with 1/3 of the lifetime left")
         logging.info("configuration OK")
         return 0
 
@@ -83,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         only=args.cert,
         force_deploy=args.force,
         skip_issue=args.command == "deploy",
+        in_window=True,  # manual runs are deliberate, ignore DEPLOY_WINDOW
     )
     return 0 if ok else 1
 
