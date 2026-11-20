@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import ssl
 from pathlib import Path
@@ -51,6 +52,13 @@ CERT_ENTITIES = (
 )
 
 
+BUTTONS = (
+    # payload, name suffix,     icon
+    ("renew",  "neu ausstellen", "mdi:certificate"),
+    ("deploy", "neu verteilen",  "mdi:upload-network"),
+)
+
+
 def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
@@ -74,6 +82,9 @@ class Publisher:
         self.client.reconnect_delay_set(min_delay=5, max_delay=300)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
+        self.client.on_message = self._on_message
+        #: (certificate name, "renew" | "deploy") pressed in Home Assistant
+        self.commands: queue.Queue = queue.Queue()
         self._config: Config | None = None
         self._snapshot: dict | None = None
         self.client.connect_async(settings.host, settings.port, keepalive=60)
@@ -85,12 +96,30 @@ class Publisher:
             log.error("MQTT connection to %s:%s refused: %s", self.s.host, self.s.port, reason_code)
             return
         log.info("connected to MQTT broker %s:%s", self.s.host, self.s.port)
+        client.subscribe(f"{self.base}/cert/+/command", qos=1)
         client.publish(self.avail, "online", qos=1, retain=True)
         # (Re-)publish everything, e.g. after a broker restart
         if self._config is not None:
             self._publish_discovery(self._config)
         if self._snapshot is not None:
             self._publish_state(self._snapshot)
+
+    def _on_message(self, client, userdata, msg):
+        # certsync/cert/<slug>/command  payload renew|deploy
+        if msg.retain:
+            return  # never act on a stale retained command
+        parts = msg.topic.split("/")
+        action = msg.payload.decode(errors="replace").strip().lower()
+        if len(parts) < 2 or action not in {a for a, _, _ in BUTTONS}:
+            log.warning("ignored MQTT command %r on %s", action, msg.topic)
+            return
+        slug = parts[-2]
+        names = {_slug(c.name): c.name for c in self._config.certs} if self._config else {}
+        if slug not in names:
+            log.warning("ignored MQTT command for unknown certificate %r", slug)
+            return
+        log.info("[%s] %s requested from Home Assistant", names[slug], action)
+        self.commands.put((names[slug], action))
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code != 0:
@@ -128,6 +157,18 @@ class Publisher:
             if key == "status":
                 cfg["json_attributes_topic"] = f"{topic}/attributes"
             out[f"{self.s.discovery_prefix}/{platform}/certsync/{uid}/config"] = cfg
+        for action, suffix, icon in BUTTONS:
+            uid = f"certsync_{slug}_{action}"
+            out[f"{self.s.discovery_prefix}/button/certsync/{uid}/config"] = {
+                **self._common(),
+                "name": f"{name} {suffix}",
+                "unique_id": uid,
+                "default_entity_id": f"button.{uid}",
+                "command_topic": f"{topic}/command",
+                "payload_press": action,
+                "icon": icon,
+                "entity_category": "config",
+            }
         return out
 
     def _global_configs(self) -> dict[str, dict]:

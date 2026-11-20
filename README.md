@@ -118,6 +118,11 @@ certsync seinen Status per MQTT-Discovery. Es entsteht das Gerät "Zertifikats-S
 | `binary_sensor.certsync_problem` | an bei Fehlern oder Ablauf in unter 14 Tagen; Attribut `probleme` |
 | `sensor.certsync_last_check` | letzte Prüfung |
 | `event.certsync_event` | `issued` (neu ausgestellt), `deployed` (verteilt, mit Zielen) |
+| `button.certsync_<name>_renew` | sofort neues Zertifikat holen und an alle Ziele verteilen |
+| `button.certsync_<name>_deploy` | vorhandenes Zertifikat sofort erneut an alle Ziele verteilen (Neustarts) |
+
+Die Buttons ignorieren das Wartungsfenster. "neu ausstellen" zählt gegen die
+Let's-Encrypt-Limits (5 identische Zertifikate pro Woche), also nicht beliebig oft drücken.
 
 Alle Werte sind retained und werden stündlich aktualisiert. Läuft certsync nicht,
 werden die Entitäten `nicht verfügbar`.

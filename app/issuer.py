@@ -139,12 +139,15 @@ def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
     return None
 
 
-def issue(cert: CertConfig, settings: Settings) -> bool:
+def issue(cert: CertConfig, settings: Settings, force: bool = False) -> bool:
     """Request the certificate, or renew it when close to expiry.
 
+    ``force`` requests a new certificate even if the current one is still fine.
     Returns True when a new certificate was issued.
     """
     reason = _issue_reason(cert, settings)
+    if reason is None and force:
+        reason = "manual request"
     if reason is None:
         return False
     log.info("[%s] requesting certificate: %s", cert.name, reason)

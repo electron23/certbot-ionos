@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,7 @@ def run_cycle(
     skip_issue: bool = False,
     in_window: bool | None = None,
     events: list[dict] | None = None,
+    force_issue: bool = False,
 ) -> bool:
     """One pass over all certificates. Returns True if everything succeeded.
 
@@ -121,7 +123,7 @@ def run_cycle(
         if only and cert.name != only:
             continue
         try:
-            issued = False if skip_issue else issue(cert, config.settings)
+            issued = False if skip_issue else issue(cert, config.settings, force=force_issue)
             bundle = load_bundle(cert, config.settings)
             state.set_issue_error(cert.name, None)
         except IssueError as exc:
@@ -195,8 +197,8 @@ def _config_mtime() -> float:
 
 
 def _sleep_until_due_or_config_changed(
-    seconds: float, baseline_mtime: float | None = None, poll: float = 30.0,
-    on_tick=None, tick_seconds: float = 3600.0,
+    seconds: float, baseline_mtime: float | None = None, poll: float = 5.0,
+    on_tick=None, tick_seconds: float = 3600.0, commands: "queue.Queue | None" = None,
 ) -> None:
     # ``baseline_mtime`` is the file's mtime from *before* the config was loaded, so a
     # write that finishes after a failed (half-written) read is still noticed.
@@ -211,6 +213,8 @@ def _sleep_until_due_or_config_changed(
                 on_tick()
             except Exception:  # noqa: BLE001 - status refresh must not stop the daemon
                 log.exception("status refresh failed")
+        if commands is not None and not commands.empty():
+            return
         if _config_mtime() != start_mtime:
             log.info("config file changed, running a cycle now")
             time.sleep(5)  # let the editor / Samba finish writing
@@ -252,8 +256,12 @@ def run_daemon() -> None:
         publisher = _ensure_publisher(publisher, config)
         state = State(config.settings.data_dir)
         events: list[dict] = []
+        commands = _drain(publisher.commands) if publisher is not None else []
         try:
-            run_cycle(config, deployers, state, events=events)
+            if commands:
+                _run_commands(config, deployers, state, commands, events)
+            else:
+                run_cycle(config, deployers, state, events=events)
         except Exception:  # keep the daemon alive
             log.exception("unexpected error in cycle")
 
@@ -274,7 +282,38 @@ def run_daemon() -> None:
             interval = min(interval, window.seconds_until_start(datetime.now(timezone.utc)) + 60)
         log.info("next check in %.1f hours (or when the config file changes)", interval / 3600)
         # hourly status refresh keeps "days left" current in Home Assistant
-        _sleep_until_due_or_config_changed(interval, loaded_mtime, on_tick=refresh)
+        _sleep_until_due_or_config_changed(
+            interval, loaded_mtime, on_tick=refresh,
+            commands=publisher.commands if publisher is not None else None,
+        )
+
+
+def _drain(q: "queue.Queue") -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    while True:
+        try:
+            item = q.get_nowait()
+        except queue.Empty:
+            return items
+        if item not in items:  # pressing a button twice runs it once
+            items.append(item)
+
+
+def _run_commands(
+    config: Config, deployers: dict[str, Deployer], state: State,
+    commands: list[tuple[str, str]], events: list[dict],
+) -> None:
+    """Manual requests from Home Assistant. They ignore the deploy window."""
+    known = {c.name for c in config.certs}
+    for cert, action in commands:
+        if cert not in known:
+            log.warning("manual %s for unknown certificate %r ignored", action, cert)
+            continue
+        log.info("[%s] manual request from Home Assistant: %s", cert, action)
+        run_cycle(
+            config, deployers, state, only=cert, in_window=True, force_deploy=True,
+            force_issue=action == "renew", events=events,
+        )
 
 
 def _ensure_publisher(current, config: Config):
