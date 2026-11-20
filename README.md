@@ -73,7 +73,7 @@ Wenn du beide brauchst, führe beide auf.
 | `adguard` | API `/control/tls/configure`, übernimmt bestehende TLS-Einstellungen | `url`, `username`, `password`, `verify_tls` |
 | `unifi` | SSH: schreibt `unifi-core.crt/.key`, `systemctl restart unifi-core` | `host`, `password` oder `key_file` |
 | `homeassistant` | SSH: schreibt `/ssl/fullchain.pem` und `privkey.pem`, `ha core restart` | `host`, `user`, `password` oder `key_file`, `command` |
-| `homeassistant_apps` | wie `homeassistant`, startet aber nur die genannten Apps neu | `host`, `user`, `password` oder `key_file`, `apps` |
+| `homeassistant_apps` | SSH: lädt nichts hoch, startet nach einem Zertifikatswechsel nur die genannten Apps neu (läuft immer nach den anderen Zielen) | `host`, `user`, `password` oder `key_file`, `apps`, optional `upload=true` |
 | `ssh` | beliebiger Host: Dateien hochladen, Kommando ausführen | `host`, `fullchain_path`, `privkey_path`, `command` |
 | `file` | schreibt PEM-Dateien in ein gemountetes Verzeichnis | `dir`, `prefix` |
 | `script` | startet dein Skript aus `scripts/` | `path`, `timeout`, beliebige weitere Optionen als `OPT_<KEY>` |
@@ -102,6 +102,25 @@ Globale Variablen für Portainer: `.env.example`.
   ein geänderter Schlüssel wird abgelehnt.
 
 Befehle im Container: `python -m app check | once | deploy [--cert NAME] [--force]`.
+
+## Home Assistant
+
+Mit `MQTT_HOST`, `MQTT_USER` und `MQTT_PASSWORD` (in `config/certsync.env`) meldet
+certsync seinen Status per MQTT-Discovery. Es entsteht das Gerät "Zertifikats-Sync":
+
+| Entität | Inhalt |
+|---|---|
+| `sensor.certsync_<name>_valid_until` | Ablaufdatum |
+| `sensor.certsync_<name>_days_left` | Restlaufzeit in Tagen |
+| `sensor.certsync_<name>_next_renewal` | ab wann erneuert wird |
+| `sensor.certsync_<name>_issued` | Ausstellungsdatum |
+| `sensor.certsync_<name>_status` | `ok`, `ausstehend` (wartet aufs Wartungsfenster) oder `fehler`; Attribute: Domains, Status je Ziel, Fehler |
+| `binary_sensor.certsync_problem` | an bei Fehlern oder Ablauf in unter 14 Tagen; Attribut `probleme` |
+| `sensor.certsync_last_check` | letzte Prüfung |
+| `event.certsync_event` | `issued` (neu ausgestellt), `deployed` (verteilt, mit Zielen) |
+
+Alle Werte sind retained und werden stündlich aktualisiert. Läuft certsync nicht,
+werden die Entitäten `nicht verfügbar`.
 
 ## Getestet und nicht getestet
 

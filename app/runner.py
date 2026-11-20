@@ -13,6 +13,7 @@ from .config import Config, ConfigError, load_config
 from .deployers import Deployer, build_deployer
 from .export import write_bundle
 from .issuer import CertBundle, IssueError, issue, load_bundle
+from .status import build_snapshot
 
 log = logging.getLogger("runner")
 
@@ -38,6 +39,36 @@ class State:
     def mark(self, cert: str, target: str, fingerprint: str) -> None:
         self.data[self._key(cert, target)] = fingerprint
         self._write(self.path, self.data)
+
+    def result(self, cert: str, target: str) -> dict | None:
+        return self.data.get("result::" + self._key(cert, target))
+
+    def set_result(self, cert: str, target: str, fingerprint: str, error: str | None) -> None:
+        self.data["result::" + self._key(cert, target)] = {
+            "ok": error is None,
+            "error": error,
+            "fingerprint": fingerprint,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        self._write(self.path, self.data)
+
+    def issue_error(self, cert: str) -> str | None:
+        return self.data.get("issue_error::" + cert)
+
+    def set_issue_error(self, cert: str, error: str | None) -> None:
+        key = "issue_error::" + cert
+        if error is None:
+            if self.data.pop(key, None) is not None:
+                self._write(self.path, self.data)
+        elif self.data.get(key) != error:
+            self.data[key] = error
+            self._write(self.path, self.data)
+
+    def last_cycle(self) -> datetime | None:
+        try:
+            return datetime.fromisoformat(json.loads(self.status_path.read_text())["last_cycle"])
+        except (OSError, ValueError, KeyError):
+            return None
 
     def attempted(self, cert: str, target: str) -> str | None:
         return self.data.get("attempt::" + self._key(cert, target))
@@ -74,30 +105,47 @@ def run_cycle(
     force_deploy: bool = False,
     skip_issue: bool = False,
     in_window: bool | None = None,
+    events: list[dict] | None = None,
 ) -> bool:
     """One pass over all certificates. Returns True if everything succeeded.
 
     ``in_window`` defaults to "is now inside DEPLOY_WINDOW" (always True without one).
+    ``events`` collects notable happenings ("issued", "deployed") for Home Assistant.
     """
     window = config.settings.deploy_window
     if in_window is None:
         in_window = window is None or window.contains(datetime.now(timezone.utc))
+    events = [] if events is None else events
     ok = True
     for cert in config.certs:
         if only and cert.name != only:
             continue
         try:
-            if not skip_issue:
-                issue(cert, config.settings)
+            issued = False if skip_issue else issue(cert, config.settings)
             bundle = load_bundle(cert, config.settings)
+            state.set_issue_error(cert.name, None)
         except IssueError as exc:
             log.error("[%s] %s", cert.name, exc)
+            state.set_issue_error(cert.name, str(exc))
             ok = False
             continue
+        if issued:
+            events.append({
+                "event_type": "issued",
+                "cert": cert.name,
+                "domains": ", ".join(cert.domains),
+                "valid_until": bundle.not_after.isoformat(timespec="seconds"),
+                "deploy_window": str(window) if window else "jederzeit",
+            })
+        deployed_now: list[str] = []
+        failed_now: list[str] = []
 
         log.info("[%s] valid until %s", cert.name, bundle.not_after.date())
         export_to_share(cert.name, bundle, config.settings.share_dir)
-        for target_name in cert.targets:
+        # Restart-only targets (Home Assistant apps) depend on files written by other
+        # targets, so they always run last regardless of their position in the list.
+        ordered = sorted(cert.targets, key=lambda n: getattr(deployers[n], "uploads", True) is False)
+        for target_name in ordered:
             deployed = state.deployed(cert.name, target_name)
             if not force_deploy and deployed == bundle.fingerprint:
                 log.debug("[%s] %s is up to date", cert.name, target_name)
@@ -118,9 +166,22 @@ def run_cycle(
                 deployers[target_name].deploy(bundle)
             except Exception as exc:  # one broken target must not block the others
                 log.error("[%s] deploy to %s failed: %s", cert.name, target_name, exc)
+                state.set_result(cert.name, target_name, bundle.fingerprint, str(exc)[:300])
+                failed_now.append(target_name)
                 ok = False
                 continue
             state.mark(cert.name, target_name, bundle.fingerprint)
+            state.set_result(cert.name, target_name, bundle.fingerprint, None)
+            deployed_now.append(target_name)
+        if deployed_now:
+            events.append({
+                "event_type": "deployed",
+                "cert": cert.name,
+                "domains": ", ".join(cert.domains),
+                "valid_until": bundle.not_after.isoformat(timespec="seconds"),
+                "targets": ", ".join(deployed_now),
+                "failed": ", ".join(failed_now),
+            })
     state.write_status(ok)
     return ok
 
@@ -134,14 +195,22 @@ def _config_mtime() -> float:
 
 
 def _sleep_until_due_or_config_changed(
-    seconds: float, baseline_mtime: float | None = None, poll: float = 30.0
+    seconds: float, baseline_mtime: float | None = None, poll: float = 30.0,
+    on_tick=None, tick_seconds: float = 3600.0,
 ) -> None:
     # ``baseline_mtime`` is the file's mtime from *before* the config was loaded, so a
     # write that finishes after a failed (half-written) read is still noticed.
     start_mtime = _config_mtime() if baseline_mtime is None else baseline_mtime
     deadline = time.monotonic() + seconds
+    next_tick = time.monotonic() + tick_seconds
     while time.monotonic() < deadline:
         time.sleep(min(poll, max(deadline - time.monotonic(), 0)))
+        if on_tick is not None and time.monotonic() >= next_tick:
+            next_tick = time.monotonic() + tick_seconds
+            try:
+                on_tick()
+            except Exception:  # noqa: BLE001 - status refresh must not stop the daemon
+                log.exception("status refresh failed")
         if _config_mtime() != start_mtime:
             log.info("config file changed, running a cycle now")
             time.sleep(5)  # let the editor / Samba finish writing
@@ -162,6 +231,7 @@ def run_daemon() -> None:
     """
     config: Config | None = None
     deployers: dict[str, Deployer] = {}
+    publisher = None
     while True:
         loaded_mtime = _config_mtime()  # read before loading, see _sleep_until_...
         try:
@@ -179,11 +249,22 @@ def run_daemon() -> None:
                 continue
             log.error("configuration reload failed, keeping the previous one: %s", exc)
 
+        publisher = _ensure_publisher(publisher, config)
         state = State(config.settings.data_dir)
+        events: list[dict] = []
         try:
-            run_cycle(config, deployers, state)
+            run_cycle(config, deployers, state, events=events)
         except Exception:  # keep the daemon alive
             log.exception("unexpected error in cycle")
+
+        def refresh(cfg=config) -> None:
+            if publisher is not None:
+                publisher.update(cfg, build_snapshot(cfg, State(cfg.settings.data_dir)))
+
+        refresh()
+        if publisher is not None:
+            for event in events:
+                publisher.event(event)
 
         interval = max(config.settings.check_interval_hours, 0.1) * 3600
         window = config.settings.deploy_window
@@ -192,4 +273,24 @@ def run_daemon() -> None:
             # even if the regular check interval would skip over the window.
             interval = min(interval, window.seconds_until_start(datetime.now(timezone.utc)) + 60)
         log.info("next check in %.1f hours (or when the config file changes)", interval / 3600)
-        _sleep_until_due_or_config_changed(interval, loaded_mtime)
+        # hourly status refresh keeps "days left" current in Home Assistant
+        _sleep_until_due_or_config_changed(interval, loaded_mtime, on_tick=refresh)
+
+
+def _ensure_publisher(current, config: Config):
+    """Create, keep or replace the MQTT publisher to match the configuration."""
+    wanted = config.settings.mqtt
+    if current is not None and current.s == wanted:
+        return current
+    if current is not None:
+        current.close()
+    if wanted is None:
+        return None
+    try:
+        from .mqtt import Publisher
+
+        log.info("Home Assistant integration via MQTT %s:%s enabled", wanted.host, wanted.port)
+        return Publisher(wanted, config.settings.data_dir)
+    except Exception:  # noqa: BLE001 - MQTT is optional
+        log.exception("cannot start MQTT publisher")
+        return None

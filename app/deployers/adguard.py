@@ -57,6 +57,15 @@ class AdGuardDeployer(Deployer):
             result = resp.json()
         except ValueError:
             result = {}
-        if result.get("warning_validation"):
-            raise RuntimeError(f"AdGuard rejected the certificate: {result['warning_validation']}")
+        warning = result.get("warning_validation") or ""
+        # warning_validation also carries harmless hints (e.g. "certificate has no IP
+        # addresses"), so judge the result by the validity flags instead.
+        invalid = [k for k in ("valid_cert", "valid_key", "valid_pair", "valid_chain")
+                   if result.get(k) is False]
+        if invalid:
+            raise RuntimeError(
+                f"AdGuard rejected the certificate ({', '.join(invalid)} false): {warning}"
+            )
+        if warning:
+            log.info("[%s] AdGuard note: %s", self.name, warning)
         log.info("[%s] certificate installed in AdGuard Home", self.name)

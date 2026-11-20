@@ -101,6 +101,17 @@ def _delete_lineage(cert: CertConfig, settings: Settings) -> None:
         )
 
 
+def renewal_due_at(parsed: x509.Certificate, settings: Settings) -> datetime:
+    """Point in time from which the certificate gets renewed."""
+    if settings.renew_days_before_expiry is not None:
+        threshold = timedelta(days=settings.renew_days_before_expiry)
+    else:
+        # Let's Encrypt's recommendation: renew with one third of the lifetime left.
+        # Adapts automatically to shorter lifetimes (90 -> 64 -> 45 days).
+        threshold = (parsed.not_valid_after_utc - parsed.not_valid_before_utc) / 3
+    return parsed.not_valid_after_utc - threshold
+
+
 def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
     """Return why (re-)issuance is needed, or None if the current cert is fine."""
     try:
@@ -122,23 +133,20 @@ def _issue_reason(cert: CertConfig, settings: Settings) -> str | None:
         return STAGING_REASON
 
     remaining = parsed.not_valid_after_utc - datetime.now(timezone.utc)
-    if settings.renew_days_before_expiry is not None:
-        threshold = timedelta(days=settings.renew_days_before_expiry)
-    else:
-        # Let's Encrypt's recommendation: renew with one third of the lifetime left.
-        # Adapts automatically to shorter lifetimes (90 -> 64 -> 45 days).
-        threshold = (parsed.not_valid_after_utc - parsed.not_valid_before_utc) / 3
-    if remaining <= threshold:
+    if datetime.now(timezone.utc) >= renewal_due_at(parsed, settings):
         return f"expires in {remaining.days} days"
     log.info("[%s] valid for %d more days, no renewal needed", cert.name, remaining.days)
     return None
 
 
-def issue(cert: CertConfig, settings: Settings) -> None:
-    """Request the certificate, or renew it when close to expiry."""
+def issue(cert: CertConfig, settings: Settings) -> bool:
+    """Request the certificate, or renew it when close to expiry.
+
+    Returns True when a new certificate was issued.
+    """
     reason = _issue_reason(cert, settings)
     if reason is None:
-        return
+        return False
     log.info("[%s] requesting certificate: %s", cert.name, reason)
     if reason == STAGING_REASON:
         _delete_lineage(cert, settings)
@@ -176,6 +184,7 @@ def issue(cert: CertConfig, settings: Settings) -> None:
             log.info("[%s] certbot: %s", cert.name, line)
     if proc.returncode != 0:
         raise IssueError(f"certbot exited with code {proc.returncode}")
+    return True
 
 
 def load_bundle(cert: CertConfig, settings: Settings) -> CertBundle:

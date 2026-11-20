@@ -45,10 +45,15 @@ class SshDeployer(Deployer):
     """
 
     required = ("host",)
+    #: False = only run ``command``, do not upload certificate files
+    uploads: bool = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if not any(self.options.get(k) for k in _FILES):
+        if not self.uploads:
+            if not self.options.get("command"):
+                raise ConfigError(f"Target '{self.name}' ({self.type}): nothing to do")
+        elif not any(self.options.get(k) for k in _FILES):
             raise ConfigError(
                 f"Target '{self.name}' ({self.type}): set at least one of "
                 + ", ".join(_FILES)
@@ -116,7 +121,7 @@ class SshDeployer(Deployer):
         client = self._connect()
         try:
             for key, (attr, mode) in _FILES.items():
-                path = self.opt(key)
+                path = self.opt(key) if self.uploads else None
                 if path:
                     self._upload(client, path, getattr(bundle, attr), mode)
                     log.info("[%s] wrote %s", self.name, path)
@@ -155,12 +160,18 @@ class HomeAssistantAppsDeployer(HomeAssistantDeployer):
     apps   space/comma separated app slugs, e.g. "a0d7b954_adguard a0d7b954_portainer"
            (list them with ``ha addons`` in the Terminal & SSH app)
 
-    The certificate files are written to /ssl as well, so this target also works
-    on its own. Every app is tried; if one fails the deploy is reported as
-    failed and retried in the next cycle.
+    The apps read the same /ssl files as Home Assistant itself, so this target
+    does NOT upload anything, it only restarts the apps (only when the certificate
+    changed). List it AFTER the ``homeassistant`` target that writes /ssl.
+    Set ``upload=true`` to write the /ssl files here as well (standalone use).
+    Every app is tried; if one fails the deploy is reported as failed and retried.
     """
 
     required = ("host", "apps")
+
+    @property
+    def uploads(self) -> bool:  # type: ignore[override]
+        return self.flag("upload", False)
 
     def __init__(self, name: str, type_: str, options: dict[str, str]):
         apps = split_list(options.get("apps", ""))

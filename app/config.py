@@ -84,6 +84,19 @@ class Settings:
     renew_days_before_expiry: int | None
     #: None = deploy at any time, otherwise only inside this daily window
     deploy_window: DeployWindow | None
+    #: None = no MQTT / Home Assistant integration
+    mqtt: MqttSettings | None = None
+
+
+@dataclass(frozen=True)
+class MqttSettings:
+    host: str
+    port: int
+    user: str | None
+    password: str | None
+    tls: bool
+    discovery_prefix: str
+    topic: str
 
 
 @dataclass(frozen=True)
@@ -177,6 +190,22 @@ def _load_settings(env: Mapping[str, str]) -> Settings:
             env.get("DEPLOY_WINDOW", "03:00-05:00"),
             (env.get("TZ") or "Europe/Berlin").strip(),
         ),
+        mqtt=_load_mqtt(env),
+    )
+
+
+def _load_mqtt(env: Mapping[str, str]) -> MqttSettings | None:
+    host = (env.get("MQTT_HOST") or "").strip()
+    if not host:
+        return None
+    return MqttSettings(
+        host=host,
+        port=int(_number(env, "MQTT_PORT", 1883)),
+        user=(env.get("MQTT_USER") or "").strip() or None,
+        password=env.get("MQTT_PASSWORD") or None,
+        tls=parse_bool(env.get("MQTT_TLS"), False),
+        discovery_prefix=(env.get("MQTT_DISCOVERY_PREFIX") or "homeassistant").strip().strip("/"),
+        topic=(env.get("MQTT_TOPIC") or "certsync").strip().strip("/"),
     )
 
 
